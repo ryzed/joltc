@@ -5,8 +5,14 @@
 #           the stock joltc.dll for win-x64 requires AVX2 + FMA and refuses to load there
 #           ("A dynamic link library (DLL) initialization routine failed").
 #   avx2  - joltc defaults (AVX, AVX2, FMA, F16C, LZCNT, TZCNT) for modern CPUs.
-# The game picks one at load time by CPU features. macOS arm64 uses NEON and needs one build.
+# Only sse42 goes into the package (see below); avx2 is kept for a later choice by CPU. macOS arm64 uses NEON: one build.
 # Distribution config: no profiler; Jolt is pinned to v5.6.0 by joltc's CMakeLists.
+#
+# The pack job puts the natives of this run together with the JoltPhysicsSharp wrapper at WRAPPER_SHA (fork
+# ryzed/JoltPhysicsSharp, branch mechs1) into two NuGet packages - JoltPhysicsSharp 2.23.0-<suffix> and
+# JoltPhysics.Native 1.1.0-<suffix> - that Mechs1 keeps in its local feed. x64 gets the sse42 build only (decision of
+# 16.11.2026: one build for every x64 CPU; avx2 is built above but not packed). Bump PACKAGE_SUFFIX on every change of
+# either side: NuGet caches packages by id and version.
 
 name: mechs1 natives
 
@@ -15,6 +21,11 @@ on:
   push:
     branches:
       - mechs1
+
+env:
+  # Full 40-char commit: actions/checkout takes a short one for a branch or tag name.
+  WRAPPER_SHA: 2e9164a47471209e1194123a3115ad47664d1388
+  PACKAGE_SUFFIX: mechs1.1
 
 jobs:
   windows:
@@ -109,3 +120,66 @@ jobs:
         with:
           name: osx-arm64
           path: bin
+
+  pack:
+    needs: [windows, linux, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: ryzed/JoltPhysicsSharp
+          ref: ${{ env.WRAPPER_SHA }}
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: ./global.json
+
+      - uses: actions/download-artifact@v8
+        with:
+          path: natives-in
+
+      - name: Place natives
+        run: |
+          mkdir -p native/mechs1/win-x64 native/mechs1/linux-x64 native/mechs1/osx-arm64
+          cp natives-in/win-x64/win-x64/sse42/joltc.dll native/mechs1/win-x64/joltc.dll
+          cp natives-in/linux-x64/linux-x64/sse42/libjoltc.so native/mechs1/linux-x64/libjoltc.so
+          cp natives-in/osx-arm64/osx-arm64/libjoltc.dylib native/mechs1/osx-arm64/libjoltc.dylib
+
+      - name: Pack
+        run: |
+          dotnet pack src/JoltPhysics.Native/JoltPhysics.Native.csproj -c Release -p:Mechs1Natives=true -p:VersionSuffix=$PACKAGE_SUFFIX -o out
+          dotnet pack src/JoltPhysicsSharp/JoltPhysicsSharp.csproj -c Release -p:Mechs1Natives=true -p:VersionSuffix=$PACKAGE_SUFFIX -o out
+          {
+            echo "joltc: ${{ github.repository }}@${{ github.sha }}"
+            echo "JoltPhysicsSharp: ryzed/JoltPhysicsSharp@$WRAPPER_SHA"
+            echo "run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            (cd native/mechs1 && sha256sum */*)
+            (cd out && sha256sum *.nupkg)
+          } > out/mechs1-package.txt
+          cat out/mechs1-package.txt
+
+      # A wrapper commit without the mechs1 csproj change would ignore Mechs1Natives and pack the stock natives (AVX2 dll,
+      # every RID) as JoltPhysics.Native 1.1.0 - same id and version as on nuget.org - silently. Check what got packed.
+      - name: Check packages
+        run: |
+          set -euo pipefail
+          native_pkg=out/JoltPhysics.Native.1.1.0-$PACKAGE_SUFFIX.nupkg
+          wrapper_pkg=out/JoltPhysicsSharp.2.23.0-$PACKAGE_SUFFIX.nupkg
+          test -f "$native_pkg"
+          test -f "$wrapper_pkg"
+          listed=$(unzip -Z1 "$native_pkg" | grep '^runtimes/' | sort)
+          expected=$(printf '%s\n' runtimes/linux-x64/native/libjoltc.so runtimes/osx-arm64/native/libjoltc.dylib runtimes/win-x64/native/joltc.dll)
+          if [ "$listed" != "$expected" ]; then echo "unexpected natives in $native_pkg:"; echo "$listed"; exit 1; fi
+          unzip -q "$native_pkg" 'runtimes/*' -d packed
+          cmp packed/runtimes/win-x64/native/joltc.dll native/mechs1/win-x64/joltc.dll
+          cmp packed/runtimes/linux-x64/native/libjoltc.so native/mechs1/linux-x64/libjoltc.so
+          cmp packed/runtimes/osx-arm64/native/libjoltc.dylib native/mechs1/osx-arm64/libjoltc.dylib
+          unzip -p "$wrapper_pkg" JoltPhysicsSharp.nuspec | grep -q "id=\"JoltPhysics.Native\" version=\"1.1.0-$PACKAGE_SUFFIX\""
+          echo "packages ok"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: nupkg
+          path: |
+            out/*.nupkg
+            out/mechs1-package.txt
