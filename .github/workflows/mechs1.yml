@@ -1,0 +1,111 @@
+# Native joltc builds for Mechs1 (fork ryzed/joltc, branch mechs1).
+#
+# x64 builds come in two flavours:
+#   sse42 - baseline for older CPUs without AVX/AVX2/FMA (e.g. Ivy Bridge laptops, low-end Celeron);
+#           the stock joltc.dll for win-x64 requires AVX2 + FMA and refuses to load there
+#           ("A dynamic link library (DLL) initialization routine failed").
+#   avx2  - joltc defaults (AVX, AVX2, FMA, F16C, LZCNT, TZCNT) for modern CPUs.
+# The game picks one at load time by CPU features. macOS arm64 uses NEON and needs one build.
+# Distribution config: no profiler; Jolt is pinned to v5.6.0 by joltc's CMakeLists.
+
+name: mechs1 natives
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - mechs1
+
+jobs:
+  windows:
+    runs-on: windows-2025-vs2026
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Get CMake
+        uses: lukka/get-cmake@latest
+
+      - name: Configure win-x64 sse42
+        run: cmake -S "." -B "build_sse42" -G "Visual Studio 18 2026" -A x64 -DCMAKE_BUILD_TYPE:String=Distribution -DUSE_AVX=OFF -DUSE_AVX2=OFF -DUSE_AVX512=OFF -DUSE_FMADD=OFF -DUSE_F16C=OFF -DUSE_LZCNT=OFF -DUSE_TZCNT=OFF
+
+      - name: Build win-x64 sse42
+        run: cmake --build build_sse42 --config Distribution
+
+      - name: Configure win-x64 avx2
+        run: cmake -S "." -B "build_avx2" -G "Visual Studio 18 2026" -A x64 -DCMAKE_BUILD_TYPE:String=Distribution
+
+      - name: Build win-x64 avx2
+        run: cmake --build build_avx2 --config Distribution
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force bin/win-x64/sse42, bin/win-x64/avx2 | Out-Null
+          Move-Item build_sse42/bin/Distribution/joltc.dll bin/win-x64/sse42/
+          Move-Item build_avx2/bin/Distribution/joltc.dll bin/win-x64/avx2/
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: win-x64
+          path: bin
+
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Get CMake
+        uses: lukka/get-cmake@latest
+
+      - name: Install llvm-strip
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y llvm
+
+      - name: Configure linux-x64 sse42
+        run: cmake -S "." -B "build_sse42" -G Ninja -DCMAKE_BUILD_TYPE=Distribution -DUSE_AVX=OFF -DUSE_AVX2=OFF -DUSE_AVX512=OFF -DUSE_FMADD=OFF -DUSE_F16C=OFF -DUSE_LZCNT=OFF -DUSE_TZCNT=OFF
+
+      - name: Build linux-x64 sse42
+        run: cmake --build build_sse42 --config Distribution --parallel
+
+      - name: Configure linux-x64 avx2
+        run: cmake -S "." -B "build_avx2" -G Ninja -DCMAKE_BUILD_TYPE=Distribution
+
+      - name: Build linux-x64 avx2
+        run: cmake --build build_avx2 --config Distribution --parallel
+
+      - name: Package
+        run: |
+          mkdir -p bin/linux-x64/sse42 bin/linux-x64/avx2
+          mv build_sse42/lib/libjoltc.so bin/linux-x64/sse42/libjoltc.so
+          mv build_avx2/lib/libjoltc.so bin/linux-x64/avx2/libjoltc.so
+          llvm-strip --strip-unneeded bin/linux-x64/sse42/libjoltc.so bin/linux-x64/avx2/libjoltc.so
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux-x64
+          path: bin
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Get CMake
+        uses: lukka/get-cmake@latest
+
+      - name: Configure osx-arm64
+        run: cmake -S "." -B "build_osx" -G Ninja -DCMAKE_BUILD_TYPE=Distribution -DCMAKE_OSX_ARCHITECTURES="arm64"
+
+      - name: Build osx-arm64
+        run: cmake --build build_osx --config Distribution --parallel
+
+      - name: Package
+        run: |
+          mkdir -p bin/osx-arm64
+          mv build_osx/lib/libjoltc.dylib bin/osx-arm64/libjoltc.dylib
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: osx-arm64
+          path: bin
