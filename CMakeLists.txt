@@ -13,8 +13,12 @@ set(CMAKE_INSTALL_MESSAGE LAZY)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(CMAKE_DEBUG_POSTFIX "d")
 
-set(CMAKE_OSX_DEPLOYMENT_TARGET "11" CACHE STRING "Minimum OS X deployment version")
-set(CMAKE_OSX_ARCHITECTURES "x86_64;arm64" CACHE STRING "Build architectures for OS X")
+if (APPLE)
+	set(CMAKE_OSX_DEPLOYMENT_TARGET "11" CACHE STRING "Minimum OS X deployment version")
+	# Only on Apple: Jolt.cmake treats any CMAKE_OSX_ARCHITECTURES containing "arm64" as an ARM build and then adds no
+	# x86 instruction set flags at all - on Linux x64 that silently produced plain SSE2 builds whatever USE_AVX2/USE_SSE4_2 said.
+	set(CMAKE_OSX_ARCHITECTURES "x86_64;arm64" CACHE STRING "Build architectures for OS X")
+endif()
 
 # Set default symbol visibility to hidden. This prevents all Jolt's symbols to be exported on macOS. This can cause crashes if a program loads multiple shared libraries with different versions of Jolt.
 set(CMAKE_CXX_VISIBILITY_PRESET hidden)
